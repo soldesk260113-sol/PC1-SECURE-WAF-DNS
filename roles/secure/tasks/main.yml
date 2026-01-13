@@ -8,7 +8,6 @@
 - name: Enable and start firewalld
   command: systemctl enable --now firewalld
 
-# ---- sysctl (persistent + apply) ----
 - name: Persist sysctl settings for forwarding and rp_filter
   copy:
     dest: /etc/sysctl.d/99-pc1-secure.conf
@@ -25,7 +24,6 @@
 - name: Apply sysctl settings now
   command: sysctl --system
 
-# ---- firewalld zones/interfaces/sources ----
 - name: Ensure ens160 is assigned to public zone (permanent)
   command: firewall-cmd --permanent --zone=public --add-interface=ens160
   register: r_pub_if
@@ -50,26 +48,43 @@
   failed_when: false
   changed_when: "'success' in (r_masq.stdout | lower)"
 
+- name: Open HTTP/HTTPS service on public zone (permanent)
+  command: firewall-cmd --permanent --zone=public --add-service=http --add-service=https
+  register: r_open_web
+  failed_when: false
+  changed_when: "'success' in (r_open_web.stdout | lower)"
+
+- name: Remove wide NodePort forward range (30000-32767) to cp1 (permanent)
+  command: firewall-cmd --permanent --zone=public --remove-forward-port=port=30000-32767:proto=tcp:toaddr=10.2.2.2
+  register: r_rm_np_range
+  failed_when: false
+  changed_when: "'success' in (r_rm_np_range.stdout | lower)"
+
+- name: Add required forward-ports (permanent)
+  command: >
+    firewall-cmd --permanent --zone=public
+    --add-forward-port=port={{ item.port }}:proto=tcp:toport={{ item.toport }}:toaddr={{ item.toaddr }}
+  loop:
+    - { port: 80,    toport: 80,    toaddr: "10.2.1.2" }
+    - { port: 443,   toport: 443,   toaddr: "10.2.1.2" }
+
+    - { port: 8080,  toport: 8080,  toaddr: "10.2.2.40" }   # Jenkins
+    - { port: 3001,  toport: 3001,  toaddr: "10.2.2.40" }   # Gitea
+    - { port: 5000,  toport: 5000,  toaddr: "10.2.2.40" }   # Harbor/Registry
+
+    - { port: 3000,  toport: 3000,  toaddr: "10.2.2.50" }   # Grafana
+    - { port: 9090,  toport: 9090,  toaddr: "10.2.2.50" }   # Prometheus
+    - { port: 9093,  toport: 9093,  toaddr: "10.2.2.50" }   # Alertmanager
+
+    - { port: 30080, toport: 30080, toaddr: "10.2.2.8" }
+    - { port: 30090, toport: 30090, toaddr: "10.2.2.8" }
+
+    # ArgoCD NodePort (임시: cp1로 포워딩 / 최종엔 worker로 교체)
+    - { port: 31372, toport: 31372, toaddr: "10.2.2.2" }
+  register: r_fwd_ports
+  failed_when: false
+  changed_when: "'success' in (r_fwd_ports.stdout | lower)"
+
 - name: Reload firewalld to apply permanent rules
   command: firewall-cmd --reload
 
-# ---- DNAT: External -> WAF ----
-- name: Forward external HTTP(80) to WAF 10.2.1.2:80 (permanent)
-  command: firewall-cmd --permanent --zone=public --add-forward-port=port=80:proto=tcp:toport=80:toaddr=10.2.1.2
-  register: r_fwd80
-  failed_when: false
-  changed_when: "'success' in (r_fwd80.stdout | lower)"
-
-- name: Forward external HTTPS(443) to WAF 10.2.1.2:443 (permanent)
-  command: firewall-cmd --permanent --zone=public --add-forward-port=port=443:proto=tcp:toport=443:toaddr=10.2.1.2
-  register: r_fwd443
-  failed_when: false
-  changed_when: "'success' in (r_fwd443.stdout | lower)"
-
-# ---- DNAT: External HTTPS -> WAF ----
-- name: Forward external HTTPS(443) to WAF 10.2.1.2:443 (permanent)
-  command: firewall-cmd --permanent --zone=public \
-           --add-forward-port=port=443:proto=tcp:toport=443:toaddr=10.2.1.2
-  register: r_fwd443
-  failed_when: false
-  changed_when: "'success' in (r_fwd443.stdout | lower)"
